@@ -1,8 +1,15 @@
 # Pyverbs学习
 learning https://github.com/linux-rdma/rdma-core/blob/master/Documentation/pyverbs.md  
-device name ('mlx4_0')  
+device name ('mlx4_0')，是ConnectX‑3 (MLX4)，链路层Ethernet，跑ROCEv2。  
+现状限制：  
+1. 标准 IB Verbs API 全部可用：Context / PD / MR / QP / CQ / SRQ 都正常
+2. **mlx4dv 私有扩展彻底不可用**：`Mlx4DVContextAttr` / Mlx4Context 这类 DV 专属接口不存在，rdma‑core 上游已经删除 mlx4dv 用户态库，没有 python binding。
+3. MLX4 硬件本身 DV 能力就残缺：不支持很多现代 ROCEv2 调优、硬件 offload，没有 packet pacing、MPRQ、timestamp 等。
+导致后果：  
+1. **Jupyter 里绝对不要用 `with` 管理 RDMA 资源**，全部手动创建、手动按顺序释放
+2. **释放顺序严格从子到父**：AH → MR → QP → CQ → PD → Context，顺序反了必崩
 
-# Jupyter Notebook
+# md代码实操
 ## 打开并查询IB设备
 ```python
 import pyverbs.device as d
@@ -130,6 +137,394 @@ attr.rss_caps.max_rwq_indirection_table_size
 256
 ```
 ## 创建PD
+```python
+import pyverbs.device as d
+from pyverbs.pd import PD
+
+with d.Context(name='mlx4_0') as ctx:
+    pd = PD(ctx)
+```
+
+## 创建MR
+```python
+import pyverbs.device as d
+from pyverbs.pd import PD
+from pyverbs.mr import MR
+from pyverbs.libibverbs_enums import ibv_access_flags
+
+with d.Context(name='mlx4_0') as ctx:
+    with PD(ctx) as pd:
+        mr_len = 1000
+        flags = ibv_access_flags.IBV_ACCESS_LOCAL_WRITE
+        mr = MR(pd, mr_len, flags)
+```
+## 创建MW
+```python
+import pyverbs.device as d
+from pyverbs.pd import PD
+from pyverbs.mr import MW
+from pyverbs.libibverbs_enums import ibv_mw_type
+
+with d.Context(name='mlx4_0') as ctx:
+    with PD(ctx) as pd:
+        mw = MW(pd, ibv_mw_type.IBV_MW_TYPE_1)
+```
+## 创建DM
+```python
+import random
+
+from pyverbs.device import DM, AllocDmAttr
+import pyverbs.device as d
+
+with d.Context(name='mlx4_0') as ctx:
+    attr = ctx.query_device_ex()
+    if attr.max_dm_size != 0:
+        dm_len = random.randint(4, attr.max_dm_size)
+        dm_attrs = AllocDmAttr(dm_len)
+        dm = DM(ctx, dm_attrs)
+```
+## 创建DMMR
+```python
+import random
+
+from pyverbs.device import DM, AllocDmAttr
+from pyverbs.mr import DMMR
+import pyverbs.device as d
+from pyverbs.pd import PD
+from pyverbs.libibverbs_enums import ibv_access_flags
+
+with d.Context(name='mlx4_0') as ctx:
+    attr = ctx.query_device_ex()
+    if attr.max_dm_size != 0:
+        dm_len = random.randint(4, attr.max_dm_size)
+        dm_attrs = AllocDmAttr(dm_len)
+        dm_mr_len = random.randint(4, dm_len)
+        with DM(ctx, dm_attrs) as dm:
+            with PD(ctx) as pd:
+                dm_mr = DMMR(pd, dm_mr_len, ibv_access_flags.IBV_ACCESS_ZERO_BASED, dm=dm,
+                             offset=0)
+```
+## 创建CQ
+```python
+import random
+
+from pyverbs.cq import CompChannel, CQ
+import pyverbs.device as d
+
+with d.Context(name='mlx4_0') as ctx:
+    num_cqes = random.randint(0, 200)
+    comp_vector = 0
+    if random.choice([True, False]):
+        with CompChannel(ctx) as cc:
+            cq = CQ(ctx, num_cqes, None, cc, comp_vector)
+    else:
+        cq = CQ(ctx, num_cqes, None, None, comp_vector)
+    print(cq)
+```
+```bash
+CQ
+Handle                : 0                   
+CQEs                  : 127     
+```
+## 创建extended CQ
+```python
+import random
+
+from pyverbs.cq import CqInitAttrEx, CQEX
+import pyverbs.device as d
+from pyverbs.libibverbs_enums import ibv_create_cq_wc_flags
+
+with d.Context(name='mlx4_0') as ctx:
+    num_cqe = random.randint(0, 200)
+    wc_flags = ibv_create_cq_wc_flags.IBV_WC_EX_WITH_CVLAN
+    comp_mask = 0
+    attrs = CqInitAttrEx(cqe=num_cqe, wc_flags=wc_flags, comp_mask=comp_mask,
+                         flags=0)
+    print(attrs)
+    cq_ex = CQEX(ctx, attrs)
+    print(cq_ex)
+```
+```bash
+Number of CQEs        : 111                 
+WC flags              : IBV_WC_EX_WITH_CVLAN 
+comp mask             : 0                   
+flags                 : 0                   
+不支持创建extended CQ操作
+---------------------------------------------------------------------------
+PyverbsRDMAError                          Traceback (most recent call last)
+/tmp/ipykernel_1321983/379539915.py in <module>
+     12                          flags=0)
+     13     print(attrs)
+---> 14     cq_ex = CQEX(ctx, attrs)
+     15     print(cq_ex)
+
+cq.pyx in pyverbs.cq.CQEX.__init__()
+
+PyverbsRDMAError: Failed to create extended CQ. Errno: 95, Operation not supported
+```
+## 创建AH
+```python
+from pyverbs.addr import GlobalRoute, AHAttr, AH
+import pyverbs.device as d
+from pyverbs.pd import PD
+
+with d.Context(name='mlx4_0') as ctx:
+    port_number = 1
+    gid_index = 0
+    gid = ctx.query_gid(port_number, gid_index)
+    gr = GlobalRoute(dgid=gid, sgid_index=gid_index)
+    ah_attr = AHAttr(gr=gr, is_global=1, port_num=port_number)
+    print(ah_attr)
+    with PD(ctx) as pd:
+        ah = AH(pd, attr=ah_attr)
+```
+```bash
+  port num              : 1                   
+  sl                    : 0                   
+  source path bits      : 0                   
+  dlid                  : 0                   
+  static rate           : 0                   
+  is global             : 1                   
+  前面是多出来的
+  dgid                  : fe80:0000:0000:0000:e61d:2dff:fe18:9f40
+  flow label            : 0                   
+  sgid index            : 0                   
+  hop limit             : 1                   
+  traffic_class         : 0
+```
+## 创建QP
+```python
+from pyverbs.qp import QPCap, QPInitAttr, QPAttr, QP
+from pyverbs.addr import GlobalRoute
+from pyverbs.addr import AH, AHAttr
+import pyverbs.device as d
+from pyverbs.libibverbs_enums import ibv_qp_type
+from pyverbs.pd import PD
+from pyverbs.cq import CQ
+import pyverbs.wr as pwr
+
+ctx = d.Context(name='mlx4_0')
+pd = PD(ctx)
+cq = CQ(ctx, 100, None, None, 0)
+cap = QPCap(100, 10, 1, 1, 0)
+qia = QPInitAttr(cap=cap, qp_type = ibv_qp_type.IBV_QPT_UD, scq=cq, rcq=cq)
+
+udqp = QP(pd, qia, QPAttr())
+port_num = 1
+gid_index = 3
+gid = ctx.query_gid(port_num, gid_index)
+gr = GlobalRoute(dgid=gid, sgid_index=gid_index)
+ah_attr = AHAttr(gr=gr, is_global=1, port_num=port_num)
+ah=AH(pd, ah_attr)
+wr = pwr.SendWR()
+wr.set_wr_ud(ah, 0x1101, 0)
+udqp.post_send(wr)
+```
+```bash
+传参错误
+---------------------------------------------------------------------------
+TypeError                                 Traceback (most recent call last)
+/tmp/ipykernel_1341720/1019242947.py in <module>
+     20 gr = GlobalRoute(dgid=gid, sgid_index=gid_index)
+     21 ah_attr = AHAttr(gr=gr, is_global=1, port_num=port_num)
+---> 22 ah=AH(pd, ah_attr)
+     23 wr = pwr.SendWR()
+     24 wr.set_wr_ud(ah, 0x1101, 0)
+
+addr.pyx in pyverbs.addr.AH.__init__()
+
+TypeError: __init__() takes exactly 1 positional argument (2 given)
+```
+## 创建extended QP
+```python
+from pyverbs.qp import QPCap, QPInitAttrEx, QPAttr, QPEx
+import pyverbs.device as d
+from pyverbs.libibverbs_enums import ibv_qp_type, ibv_qp_init_attr_mask
+from pyverbs.pd import PD
+from pyverbs.cq import CQ
+
+
+ctx = d.Context(name='mlx4_0')
+pd = PD(ctx)
+cq = CQ(ctx, 100)
+cap = QPCap(100, 10, 1, 1, 0)
+qia = QPInitAttrEx(qp_type=ibv_qp_type.IBV_QPT_UD, scq=cq, rcq=cq, cap=cap, pd=pd,
+                   comp_mask=ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_SEND_OPS_FLAGS| \
+                   ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_PD)
+qp = QPEx(ctx, qia)
+```
+```bash
+不支持创建extended QP操作
+---------------------------------------------------------------------------
+PyverbsRDMAError                          Traceback (most recent call last)
+/tmp/ipykernel_1341720/4006348303.py in <module>
+     13                    comp_mask=ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_SEND_OPS_FLAGS| \
+     14                    ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_PD)
+---> 15 qp = QPEx(ctx, qia)
+
+qp.pyx in pyverbs.qp.QPEx.__init__()
+
+qp.pyx in pyverbs.qp.QP.__init__()
+
+PyverbsRDMAError: Failed to create QP. Errno: 95, Operation not supported
+```
+## 创建XRCD
+```python
+from pyverbs.xrcd import XRCD, XRCDInitAttr
+import pyverbs.device as d
+from pyverbs.libibverbs_enums import ibv_xrcd_init_attr_mask
+import stat
+import os
+
+
+ctx = d.Context(name='mlx4_0')
+xrcd_fd = os.open('/tmp/xrcd', os.O_RDONLY | os.O_CREAT,
+                  stat.S_IRUSR | stat.S_IRGRP)
+init = XRCDInitAttr(ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_FD | ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_OFLAGS,
+                    os.O_CREAT, xrcd_fd)
+xrcd = XRCD(ctx, init)
+```
+## 创建XRC SRQ
+```python
+from pyverbs.xrcd import XRCD, XRCDInitAttr
+from pyverbs.srq import SRQ, SrqInitAttrEx
+import pyverbs.device as d
+from pyverbs.libibverbs_enums import ibv_xrcd_init_attr_mask, ibv_srq_type, ibv_srq_init_attr_mask
+from pyverbs.cq import CQ
+from pyverbs.pd import PD
+import stat
+import os
+
+
+ctx = d.Context(name='mlx4_0')
+pd = PD(ctx)
+cq = CQ(ctx, 100, None, None, 0)
+xrcd_fd = os.open('/tmp/xrcd', os.O_RDONLY | os.O_CREAT,
+                  stat.S_IRUSR | stat.S_IRGRP)
+init = XRCDInitAttr(ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_FD | ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_OFLAGS,
+                    os.O_CREAT, xrcd_fd)
+xrcd = XRCD(ctx, init)
+
+srq_attr = SrqInitAttrEx(max_wr=10)
+srq_attr.srq_type = ibv_srq_type.IBV_SRQT_XRC
+srq_attr.pd = pd
+srq_attr.xrcd = xrcd
+srq_attr.cq = cq
+srq_attr.comp_mask = ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_TYPE | ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_PD | \
+                     ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_CQ | ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_XRCD
+srq = SRQ(ctx, srq_attr)
+```
+## 后面mlx5操作（mlx4dv私有扩展彻底不可用）
+mlx5 provider的pyverbs.providers.mlx5.mlx5dv没有pyverbs.providers.mlx4.mlx4dv
+## 创建CMID
+失败
 
 
 
+
+
+
+
+
+
+
+# 附录
+## 查询设备属性
+```python
+import pyverbs.device as d
+
+ctx = d.Context(name='mlx4_0')
+dev_attr = ctx.query_device()
+
+# 打印完整属性表（和官方文档格式一致）
+print("=== 完整设备属性 ===")
+print(dev_attr)
+
+# 打印所有可用属性名，确认准确字段
+print("\n=== 所有属性名列表 ===")
+print([attr for attr in dir(dev_attr) if not attr.startswith('_')])
+```
+```bash
+=== 完整设备属性 ===
+FW version            : 2.42.5000           
+Node guid             : e41d:2d03:0018:9f40 
+Sys image GUID        : e41d:2d03:0018:9f43 
+Max MR size           : 0xffffffffffffffff  
+Page size cap         : 0xfffffe00          
+Vendor ID             : 0x2c9               
+Vendor part ID        : 4103                
+HW version            : 0                   
+Max QP                : 425912              
+Max QP WR             : 16351               
+Device cap flags      : 
+  IBV_DEVICE_BAD_PKEY_CNTR
+  IBV_DEVICE_BAD_QKEY_CNTR
+  IBV_DEVICE_CHANGE_PHY_PORT
+  IBV_DEVICE_UD_AV_PORT_ENFORCE
+  IBV_DEVICE_PORT_ACTIVE_EVENT
+  IBV_DEVICE_SYS_IMAGE_GUID
+  IBV_DEVICE_RC_RNR_NAK_GEN
+  IBV_DEVICE_MEM_WINDOW
+  IBV_DEVICE_UD_IP_CSUM
+  IBV_DEVICE_XRC
+  IBV_DEVICE_MEM_MGT_EXTENSIONS
+  IBV_DEVICE_MEM_WINDOW_TYPE_2B
+  IBV_DEVICE_RAW_IP_CSUM
+  IBV_DEVICE_MANAGED_FLOW_STEERING
+  
+Max SGE               : 32                  
+Max SGE RD            : 30                  
+MAX CQ                : 65408               
+Max CQE               : 4194303             
+Max MR                : 524032              
+Max PD                : 32764               
+Max QP RD atom        : 16                  
+Max EE RD atom        : 0                   
+Max res RD atom       : 6814592             
+Max QP init RD atom   : 128                 
+Max EE init RD atom   : 0                   
+Atomic caps           : 1                   
+Max EE                : 0                   
+Max RDD               : 0                   
+Max MW                : 0                   
+Max raw IPv6 QPs      : 0                   
+Max raw ethy QP       : 0                   
+Max mcast group       : 131072              
+Max mcast QP attach   : 244                 
+Max AH                : 2147483647          
+Max FMR               : 0                   
+Max map per FMR       : 8191                
+Max SRQ               : 65472               
+Max SRQ WR            : 16383               
+Max SRQ SGE           : 31                  
+Max PKeys             : 128                 
+local CA ack delay    : 15                  
+Phys port count       : 1                   
+
+=== 所有属性名列表 ===
+['atomic_caps', 'device_cap_flags', 'fw_version', 'hw_ver', 'local_ca_ack_delay', 'max_ah', 'max_cq', 'max_cqe', 'max_ee', 'max_ee_init_rd_atom', 'max_ee_rd_atom', 'max_fmr', 'max_map_per_fmr', 'max_mcast_grp', 'max_mcast_qp_attach', 'max_mr', 'max_mr_size', 'max_mw', 'max_pd', 'max_pkeys', 'max_qp', 'max_qp_init_rd_atom', 'max_qp_rd_atom', 'max_qp_wr', 'max_raw_ethy_qp', 'max_raw_ipv6_qps', 'max_rdd', 'max_res_rd_atom', 'max_sge', 'max_sge_rd', 'max_srq', 'max_srq_sge', 'max_srq_wr', 'node_guid', 'page_size_cap', 'phys_port_cnt', 'set_log_level', 'sys_image_guid', 'vendor_id', 'vendor_part_id']
+```
+## 查询CQ属性
+```python
+import pyverbs.device as d
+from pyverbs.cq import CQ
+
+ctx = d.Context(name='mlx4_0')
+cq = CQ(ctx, 1024)
+print("CQ 对象所有公开属性：")
+print([attr for attr in dir(cq) if not attr.startswith('_')])
+```
+```bash
+CQ 对象所有公开属性：
+['ack_events', 'close', 'comp_channel', 'cq', 'cqe', 'poll', 'req_notify', 'resize', 'set_log_level']
+```
+
+
+## （格式相关）
+## 创建
+```python
+
+```
+```bash
+
+```
