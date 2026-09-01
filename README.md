@@ -5,6 +5,7 @@ device name ('mlx4_0')，是ConnectX‑3 (MLX4)，链路层Ethernet，跑ROCEv2�
 1. 标准 IB Verbs API 全部可用：Context / PD / MR / QP / CQ / SRQ 都正常
 2. **mlx4dv 私有扩展彻底不可用**：`Mlx4DVContextAttr` / Mlx4Context 这类 DV 专属接口不存在，rdma‑core 上游已经删除 mlx4dv 用户态库，没有 python binding。
 3. MLX4 硬件本身 DV 能力就残缺：不支持很多现代 ROCEv2 调优、硬件 offload，没有 packet pacing、MPRQ、timestamp 等。
+4. （new）**MLX4 (CX‑3) pyverbs AH 不支持全局 GRH AH 对象**。
 导致后果：  
 1. **Jupyter 里绝对不要用 `with` 管理 RDMA 资源**，全部手动创建、手动按顺序释放
 2. **释放顺序严格从子到父**：AH → MR → QP → CQ → PD → Context，顺序反了必崩
@@ -226,42 +227,8 @@ CQ
 Handle                : 0                   
 CQEs                  : 127     
 ```
-## 创建extended CQ
-```python
-import random
+## 创建extended CQ（确定不支持）
 
-from pyverbs.cq import CqInitAttrEx, CQEX
-import pyverbs.device as d
-from pyverbs.libibverbs_enums import ibv_create_cq_wc_flags
-
-with d.Context(name='mlx4_0') as ctx:
-    num_cqe = random.randint(0, 200)
-    wc_flags = ibv_create_cq_wc_flags.IBV_WC_EX_WITH_CVLAN
-    comp_mask = 0
-    attrs = CqInitAttrEx(cqe=num_cqe, wc_flags=wc_flags, comp_mask=comp_mask,
-                         flags=0)
-    print(attrs)
-    cq_ex = CQEX(ctx, attrs)
-    print(cq_ex)
-```
-```bash
-Number of CQEs        : 111                 
-WC flags              : IBV_WC_EX_WITH_CVLAN 
-comp mask             : 0                   
-flags                 : 0                   
-不支持创建extended CQ操作
----------------------------------------------------------------------------
-PyverbsRDMAError                          Traceback (most recent call last)
-/tmp/ipykernel_1321983/379539915.py in <module>
-     12                          flags=0)
-     13     print(attrs)
----> 14     cq_ex = CQEX(ctx, attrs)
-     15     print(cq_ex)
-
-cq.pyx in pyverbs.cq.CQEX.__init__()
-
-PyverbsRDMAError: Failed to create extended CQ. Errno: 95, Operation not supported
-```
 ## 创建AH
 ```python
 from pyverbs.addr import GlobalRoute, AHAttr, AH
@@ -292,7 +259,7 @@ with d.Context(name='mlx4_0') as ctx:
   hop limit             : 1                   
   traffic_class         : 0
 ```
-## 创建QP
+## 创建QP（不支持GRH的AH）
 ```python
 from pyverbs.qp import QPCap, QPInitAttr, QPAttr, QP
 from pyverbs.addr import GlobalRoute
@@ -335,98 +302,18 @@ addr.pyx in pyverbs.addr.AH.__init__()
 
 TypeError: __init__() takes exactly 1 positional argument (2 given)
 ```
-## 创建extended QP
-```python
-from pyverbs.qp import QPCap, QPInitAttrEx, QPAttr, QPEx
-import pyverbs.device as d
-from pyverbs.libibverbs_enums import ibv_qp_type, ibv_qp_init_attr_mask
-from pyverbs.pd import PD
-from pyverbs.cq import CQ
+## 创建extended QP（确定不支持）
+
+## 创建XRCD（仅限原生IB 不支持RoCEv2）
 
 
-ctx = d.Context(name='mlx4_0')
-pd = PD(ctx)
-cq = CQ(ctx, 100)
-cap = QPCap(100, 10, 1, 1, 0)
-qia = QPInitAttrEx(qp_type=ibv_qp_type.IBV_QPT_UD, scq=cq, rcq=cq, cap=cap, pd=pd,
-                   comp_mask=ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_SEND_OPS_FLAGS| \
-                   ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_PD)
-qp = QPEx(ctx, qia)
-```
-```bash
-不支持创建extended QP操作
----------------------------------------------------------------------------
-PyverbsRDMAError                          Traceback (most recent call last)
-/tmp/ipykernel_1341720/4006348303.py in <module>
-     13                    comp_mask=ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_SEND_OPS_FLAGS| \
-     14                    ibv_qp_init_attr_mask.IBV_QP_INIT_ATTR_PD)
----> 15 qp = QPEx(ctx, qia)
+## 创建XRC SRQ（不仅限原生IB 不支持RoCEv2）
 
-qp.pyx in pyverbs.qp.QPEx.__init__()
-
-qp.pyx in pyverbs.qp.QP.__init__()
-
-PyverbsRDMAError: Failed to create QP. Errno: 95, Operation not supported
-```
-## 创建XRCD
-```python
-from pyverbs.xrcd import XRCD, XRCDInitAttr
-import pyverbs.device as d
-from pyverbs.libibverbs_enums import ibv_xrcd_init_attr_mask
-import stat
-import os
-
-
-ctx = d.Context(name='mlx4_0')
-xrcd_fd = os.open('/tmp/xrcd', os.O_RDONLY | os.O_CREAT,
-                  stat.S_IRUSR | stat.S_IRGRP)
-init = XRCDInitAttr(ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_FD | ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_OFLAGS,
-                    os.O_CREAT, xrcd_fd)
-xrcd = XRCD(ctx, init)
-```
-## 创建XRC SRQ
-```python
-from pyverbs.xrcd import XRCD, XRCDInitAttr
-from pyverbs.srq import SRQ, SrqInitAttrEx
-import pyverbs.device as d
-from pyverbs.libibverbs_enums import ibv_xrcd_init_attr_mask, ibv_srq_type, ibv_srq_init_attr_mask
-from pyverbs.cq import CQ
-from pyverbs.pd import PD
-import stat
-import os
-
-
-ctx = d.Context(name='mlx4_0')
-pd = PD(ctx)
-cq = CQ(ctx, 100, None, None, 0)
-xrcd_fd = os.open('/tmp/xrcd', os.O_RDONLY | os.O_CREAT,
-                  stat.S_IRUSR | stat.S_IRGRP)
-init = XRCDInitAttr(ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_FD | ibv_xrcd_init_attr_mask.IBV_XRCD_INIT_ATTR_OFLAGS,
-                    os.O_CREAT, xrcd_fd)
-xrcd = XRCD(ctx, init)
-
-srq_attr = SrqInitAttrEx(max_wr=10)
-srq_attr.srq_type = ibv_srq_type.IBV_SRQT_XRC
-srq_attr.pd = pd
-srq_attr.xrcd = xrcd
-srq_attr.cq = cq
-srq_attr.comp_mask = ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_TYPE | ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_PD | \
-                     ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_CQ | ibv_srq_init_attr_mask.IBV_SRQ_INIT_ATTR_XRCD
-srq = SRQ(ctx, srq_attr)
-```
 ## 后面mlx5操作（mlx4dv私有扩展彻底不可用）
-mlx5 provider的pyverbs.providers.mlx5.mlx5dv没有pyverbs.providers.mlx4.mlx4dv
-## 创建CMID
+上游 rdma‑core 已经废弃 mlx4dv，pyverbs 新版本已经删掉 mlx4 provider  
+mlx5 provider的pyverbs.providers.mlx5.mlx5dv没有pyverbs.providers.mlx4.mlx4dv  
+## 创建CMID（这个不应该失败。支持 RoCEv1、RoCEv2；但是不支持 iWARP。需要进一步尝试）
 失败
-
-
-
-
-
-
-
-
-
 
 # 附录
 ## 查询设备属性
