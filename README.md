@@ -159,52 +159,9 @@ with d.Context(name='mlx4_0') as ctx:
         flags = ibv_access_flags.IBV_ACCESS_LOCAL_WRITE
         mr = MR(pd, mr_len, flags)
 ```
-## 创建MW
-```python
-import pyverbs.device as d
-from pyverbs.pd import PD
-from pyverbs.mr import MW
-from pyverbs.libibverbs_enums import ibv_mw_type
-
-with d.Context(name='mlx4_0') as ctx:
-    with PD(ctx) as pd:
-        mw = MW(pd, ibv_mw_type.IBV_MW_TYPE_1)
-```
-## 创建DM
-```python
-import random
-
-from pyverbs.device import DM, AllocDmAttr
-import pyverbs.device as d
-
-with d.Context(name='mlx4_0') as ctx:
-    attr = ctx.query_device_ex()
-    if attr.max_dm_size != 0:
-        dm_len = random.randint(4, attr.max_dm_size)
-        dm_attrs = AllocDmAttr(dm_len)
-        dm = DM(ctx, dm_attrs)
-```
-## 创建DMMR
-```python
-import random
-
-from pyverbs.device import DM, AllocDmAttr
-from pyverbs.mr import DMMR
-import pyverbs.device as d
-from pyverbs.pd import PD
-from pyverbs.libibverbs_enums import ibv_access_flags
-
-with d.Context(name='mlx4_0') as ctx:
-    attr = ctx.query_device_ex()
-    if attr.max_dm_size != 0:
-        dm_len = random.randint(4, attr.max_dm_size)
-        dm_attrs = AllocDmAttr(dm_len)
-        dm_mr_len = random.randint(4, dm_len)
-        with DM(ctx, dm_attrs) as dm:
-            with PD(ctx) as pd:
-                dm_mr = DMMR(pd, dm_mr_len, ibv_access_flags.IBV_ACCESS_ZERO_BASED, dm=dm,
-                             offset=0)
-```
+## 创建MW（不支持）
+## 创建DM（不支持）
+## 创建DMMR（不支持）
 ## 创建CQ
 ```python
 import random
@@ -227,8 +184,7 @@ CQ
 Handle                : 0                   
 CQEs                  : 127     
 ```
-## 创建extended CQ（确定不支持）
-
+## 创建extended CQ（不支持）
 ## 创建AH
 ```python
 from pyverbs.addr import GlobalRoute, AHAttr, AH
@@ -259,7 +215,7 @@ with d.Context(name='mlx4_0') as ctx:
   hop limit             : 1                   
   traffic_class         : 0
 ```
-## 创建QP（不支持GRH的AH）
+## 创建QP（不用管AH等mlx再说）
 ```python
 from pyverbs.qp import QPCap, QPInitAttr, QPAttr, QP
 from pyverbs.addr import GlobalRoute
