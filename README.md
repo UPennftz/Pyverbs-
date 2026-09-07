@@ -186,6 +186,7 @@ CQEs                  : 127
 ```
 ## 创建extended CQ（不支持）
 ## 创建AH
+创建GlobalRoute, AHAttr, AH，在RoCE环境运行
 ```python
 from pyverbs.addr import GlobalRoute, AHAttr, AH
 import pyverbs.device as d
@@ -215,7 +216,13 @@ with d.Context(name='mlx4_0') as ctx:
   hop limit             : 1                   
   traffic_class         : 0
 ```
-## 创建QP（不用管AH等mlx再说）
+## 创建QP
+is_global=0仅限原生IB，不支持RoCEv2。  
+
+功能目的完全一致：创建 UD QP 并执行一次 UD 报文发送。  
+
+mlx4 等价实现：用 WR 内联 GRH 替代 AH 句柄，发送效果完全相同，是 mlx4 上 RoCEv2 UD 通信的唯一可行方式。  
+
 ```python
 from pyverbs.qp import QPCap, QPInitAttr, QPAttr, QP
 from pyverbs.addr import GlobalRoute
@@ -262,14 +269,28 @@ TypeError: __init__() takes exactly 1 positional argument (2 given)
 
 ## 创建XRCD（仅限原生IB 不支持RoCEv2）
 
-
 ## 创建XRC SRQ（不仅限原生IB 不支持RoCEv2）
 
-## 后面mlx5操作（mlx4dv私有扩展彻底不可用）
+## 后面mlx5的provider操作（mlx4dv私有扩展彻底不可用）
 上游 rdma‑core 已经废弃 mlx4dv，pyverbs 新版本已经删掉 mlx4 provider  
 mlx5 provider的pyverbs.providers.mlx5.mlx5dv没有pyverbs.providers.mlx4.mlx4dv  
+## 打开
+## 查询
+## 创建QP
+## 创建CQ
+
 ## 创建CMID（这个不应该失败。支持 RoCEv1、RoCEv2；但是不支持 iWARP。需要进一步尝试）
 失败
+## ParentDomain（MemAlloc内存对齐）
+## MLX5 VAR
+## 数据包调速PP
+## 用户访问区域UAR
+## 导入 设备 PD MR
+## 流量导向Flow Steering
+## 以太网参数规格项Ethernet spec
+## MLX5 DevX对象
+控制pd？
+
 
 # 附录
 ## 查询设备属性
