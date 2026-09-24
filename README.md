@@ -216,13 +216,11 @@ with d.Context(name='mlx4_0') as ctx:
   hop limit             : 1                   
   traffic_class         : 0
 ```
-## 创建QP
-is_global=0仅限原生IB，不支持RoCEv2。  
+## 创建QP（进度目前在这里）
 
-功能目的完全一致：创建 UD QP 并执行一次 UD 报文发送。  
+### 附录（RoCEv1）
 
-mlx4 等价实现：用 WR 内联 GRH 替代 AH 句柄，发送效果完全相同，是 mlx4 上 RoCEv2 UD 通信的唯一可行方式。  
-
+### 代码
 ```python
 from pyverbs.qp import QPCap, QPInitAttr, QPAttr, QP
 from pyverbs.addr import GlobalRoute
@@ -267,9 +265,9 @@ TypeError: __init__() takes exactly 1 positional argument (2 given)
 ```
 ## 创建extended QP（确定不支持）
 
-## 创建XRCD（仅限原生IB 不支持RoCEv2）
+## 创建XRCD（仅限原生IB）
 
-## 创建XRC SRQ（不仅限原生IB 不支持RoCEv2）
+## 创建XRC SRQ（不仅限原生IB）
 
 ## 后面mlx5的provider操作（mlx4dv私有扩展彻底不可用）
 上游 rdma‑core 已经废弃 mlx4dv，pyverbs 新版本已经删掉 mlx4 provider  
@@ -293,6 +291,177 @@ mlx5 provider的pyverbs.providers.mlx5.mlx5dv没有pyverbs.providers.mlx4.mlx4dv
 
 
 # 附录
+## 关键信息
+1. HCA：MLX4103 ConnectX-3 Pro，RoCEv1，ens1，IP `192.168.2.24`
+2. GID0：`fe80::e61d:2dff:fe18:9f40`（link-local，RoCEv1）
+GID1：`::ffff:192.168.2.24`（IPv4 mapped GID，RoCEv1，**开发优先用这个 GID**）
+3. 网卡二层 MTU 9000；RDMA HCA MTU 固定 4096，UD WR payload 最大要扣掉 RoCE 头。
+4. **无 ODP，buffer 必须 mlock**
+5. 内核模块 ok；但你手动编译 rdma-core 的 lib 路径污染 LD_LIBRARY_PATH，导致 ibstat 挂掉。ibv_devinfo 不受影响。
+6. RoCEv1 限制：**只能同二层广播域，不能跨网段**，对端机器必须在 192.168.2.0/24 同网段。
+## 网络扫描结果
+全网段
+```
+192.168.2.1（网关，不用管）
+192.168.2.24（本机）
+192.168.2.27
+192.168.2.28
+192.168.2.30
+192.168.2.31
+192.168.2.35
+192.168.2.115
+192.168.2.125
+192.168.2.126
+192.168.2.129
+192.168.2.150
+192.168.2.202
+192.168.2.203
+192.168.2.220
+```
+带网卡
+```
+192.168.2.28
+192.168.2.30
+192.168.2.31
+192.168.2.35
+192.168.2.115
+192.168.2.126
+```
+## GID
+```bash
+show_gids
+```
+```bash
+DEV     PORT    INDEX   GID                                     IPv4            VER     DEV
+---     ----    -----   ---                                     ------------    ---     ---
+mlx4_0  1       0       fe80:0000:0000:0000:e61d:2dff:fe18:9f40                 v1      ens1
+mlx4_0  1       1       0000:0000:0000:0000:0000:ffff:c0a8:0218 192.168.2.24    v1      ens1
+n_gids_found=2
+```
+## 查询设备信息
+```bash
+ibv_devinfo -v
+```
+```bash
+hca_id: mlx4_0
+        transport:                      InfiniBand (0)
+        fw_ver:                         2.42.5000
+        node_guid:                      e41d:2d03:0018:9f40
+        sys_image_guid:                 e41d:2d03:0018:9f43
+        vendor_id:                      0x02c9
+        vendor_part_id:                 4103
+        hw_ver:                         0x0
+        board_id:                       MT_1100111019
+        phys_port_cnt:                  1
+        max_mr_size:                    0xffffffffffffffff
+        page_size_cap:                  0xfffffe00
+        max_qp:                         425912
+        max_qp_wr:                      16351
+        device_cap_flags:               0x2d7e9c66
+                                        BAD_PKEY_CNTR
+                                        BAD_QKEY_CNTR
+                                        CHANGE_PHY_PORT
+                                        UD_AV_PORT_ENFORCE
+                                        PORT_ACTIVE_EVENT
+                                        SYS_IMAGE_GUID
+                                        RC_RNR_NAK_GEN
+                                        MEM_WINDOW
+                                        UD_IP_CSUM
+                                        XRC
+                                        MEM_MGT_EXTENSIONS
+                                        MEM_WINDOW_TYPE_2B
+                                        RAW_IP_CSUM
+                                        MANAGED_FLOW_STEERING
+                                        Unknown flags: 0x8488000
+        max_sge:                        32
+        max_sge_rd:                     30
+        max_cq:                         65408
+        max_cqe:                        4194303
+        max_mr:                         524032
+        max_pd:                         32764
+        max_qp_rd_atom:                 16
+        max_ee_rd_atom:                 0
+        max_res_rd_atom:                6814592
+        max_qp_init_rd_atom:            128
+        max_ee_init_rd_atom:            0
+        atomic_cap:                     ATOMIC_HCA (1)
+        max_ee:                         0
+        max_rdd:                        0
+        max_mw:                         0
+        max_raw_ipv6_qp:                0
+        max_raw_ethy_qp:                0
+        max_mcast_grp:                  131072
+        max_mcast_qp_attach:            244
+        max_total_mcast_qp_attach:      31981568
+        max_ah:                         2147483647
+        max_fmr:                        0
+        max_srq:                        65472
+        max_srq_wr:                     16383
+        max_srq_sge:                    31
+        max_pkeys:                      128
+        local_ca_ack_delay:             15
+        general_odp_caps:
+        rc_odp_caps:
+                                        NO SUPPORT
+        uc_odp_caps:
+                                        NO SUPPORT
+        ud_odp_caps:
+                                        NO SUPPORT
+        xrc_odp_caps:
+                                        NO SUPPORT
+        completion timestamp_mask:                      0x0000ffffffffffff
+        hca_core_clock:                 427000kHZ
+        raw packet caps:
+                                        Scatter FCS offload
+        device_cap_flags_ex:            0x2D7E9C66
+        tso_caps:
+                max_tso:                        131072
+                supported_qp:
+                                        SUPPORT_RAW_PACKET
+        rss_caps:
+                max_rwq_indirection_tables:                     425912
+                max_rwq_indirection_table_size:                 256
+                rx_hash_function:                               0x1
+                rx_hash_fields_mask:                            0x800000FF
+                supported_qp:
+                                        SUPPORT_RAW_PACKET
+        max_wq_type_rq:                 425912
+        packet_pacing_caps:
+                qp_rate_limit_min:      0kbps
+                qp_rate_limit_max:      0kbps
+        tag matching not supported
+
+        cq moderation caps:
+                max_cq_count:   65535
+                max_cq_period:  65535 us
+
+        num_comp_vectors:               96
+                port:   1
+                        state:                  PORT_ACTIVE (4)
+                        max_mtu:                4096 (5)
+                        active_mtu:             4096 (5)
+                        sm_lid:                 0
+                        port_lid:               0
+                        port_lmc:               0x00
+                        link_layer:             Ethernet
+                        max_msg_sz:             0x40000000
+                        port_cap_flags:         0x04010000
+                        port_cap_flags2:        0x0000
+                        max_vl_num:             2 (2)
+                        bad_pkey_cntr:          0x0
+                        qkey_viol_cntr:         0x0
+                        sm_sl:                  0
+                        pkey_tbl_len:           1
+                        gid_tbl_len:            128
+                        subnet_timeout:         0
+                        init_type_reply:        0
+                        active_width:           4X (2)
+                        active_speed:           10.0 Gbps (4)
+                        phys_state:             LINK_UP (5)
+                        GID[  0]:               fe80:0000:0000:0000:e61d:2dff:fe18:9f40, RoCE v1
+                        GID[  1]:               0000:0000:0000:0000:0000:ffff:c0a8:0218, RoCE v1
+
+```
 ## 查询设备属性
 ```python
 import pyverbs.device as d
